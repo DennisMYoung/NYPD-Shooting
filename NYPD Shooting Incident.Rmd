@@ -1,0 +1,187 @@
+---
+title: "NYPD Shooting Incident Data"
+author: "Student"
+date: '2023-02-19'
+output: pdf_document
+---
+
+Questions of interest:
+1.) Have shooting been increasing or decreasing over time.
+2.) What are the demographics of the victims?
+3.) Can the demographics of the victims be used to model to number victim in the dataset?
+4.) Can the age range of the victim be used to predict the likelihood of dies from the shooting?
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+First, I am going to declare my libraries.
+
+```{r library, message=FALSE}
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+```
+
+Below is a link to the in data for NYPD Shooting Incidents.  This data includes information on each shooting incident from 2006 to 2021.  It includes information like date, time, and location of the shooting, along with basic demographic information on both the suspect and the victim.  The demographic information includes age range, race, and sex. There is also an indicator on weather or not the shooting resulted in a death.
+
+```{r url, message=FALSE}
+url_NYPD <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+shooting_data <- read_csv(url_NYPD)
+```
+
+It is usually a good idea to a quick exploration of the data using the summary function in R.
+
+```{r sum_func, message=FALSE}
+summary(shooting_data)
+```
+A lot of the key fields, including OCCUR_DATE, are in character format.  So, there really isn't much to glean from the summary.
+
+The next step is to use the summary function to look for missing values.
+
+```{r missing, message=FALSE}
+summary(is.na(shooting_data))
+```
+From this, we can see that typically over a third of the demographic information is missing for the suspect.  Also, it is more likely that we will find racial bias in the suspect information.  So, for this analysis, we will focus on the demographics of the victim.
+
+Next, let's check the incident key to make sure it was unique to each row. Based on the query below it is not.  However, this is mentioned in the footnotes attached to the landing page for the data: https://data.cityofnewyork.us/Public-Safety/NYPD-Shooting-Incident-Data-Historic-/833y-fsy8
+
+"A shooting incident can have multiple victims involved and as a result duplicate INCIDENT_KEY’s are produced. Each INCIDENT_KEY represents a victim but similar duplicate keys are counted as one incident"
+
+```{r dup_key, message=FALSE}
+dup_key <- shooting_data %>%
+  dplyr::group_by (INCIDENT_KEY) %>%
+  dplyr::summarise(cnt = n()) %>%
+  dplyr::filter(cnt > 1)
+
+head(dup_key)
+```
+
+For this analysis, when referring to "incidents", it implies counting unique "INCIDENT_KEY"s, and when referring to "victims", it implies counting distinct rows.  Typically, when looking at frequencies over time, the measure will be the count of "incidents", and when looking at demographics, like age or race, the count will be "victims".
+
+Next, lets summarized the data to group by "INCIDENT_KEY", and the needed columns for the exploratory analysis to create a column named "VICTIMS" that it the count of distinct rows. Also, the "OCCUR_DATE" field was not in a date format, so let's change it to a date format for easier manipulation.
+
+```{r summary, message=FALSE}
+shooting_summary <- shooting_data %>%
+  dplyr::group_by (INCIDENT_KEY,OCCUR_DATE,BORO,
+              PRECINCT,VIC_AGE_GROUP,VIC_SEX,
+              VIC_RACE) %>%
+  dplyr::summarise(victim_cnt = n()) %>%
+  dplyr::mutate(OCCUR_DATE=mdy(OCCUR_DATE))
+```
+
+Now, let's  see if shootings have been increasing over the years.
+
+```{r incidents, message=FALSE}
+incidents_year <- shooting_summary %>%
+  dplyr::group_by(year=year(OCCUR_DATE)) %>%
+  dplyr::summarise(incidents = n())
+
+ggplot(data=incidents_year, aes(x=year, y=incidents)) +
+  geom_line()
+
+```
+It looks like shooting incidents were decreasing over the years but saw a major increase in 2020 and 2021.  Now, let's see what months in 2020 saw the most shootings.  Note, the footnotes states that the data only includes, "valid shooting incidents resulting in an injured victim".  This can affect the measure of true shootings over time.  Also, these are just raw numbers.  For a future analysis, it would be best to adjust these numbers by population size.
+
+```{r month, message=FALSE}
+incidents_2020 <- shooting_summary %>%
+  dplyr::group_by(year=year(OCCUR_DATE),month=month(OCCUR_DATE)) %>%
+  dplyr::summarise(incidents = n()) %>%
+  dplyr::filter(year == 2020)
+
+ggplot(data=incidents_2020, aes(x=month, y=incidents)) +
+  geom_line() + 
+  scale_x_continuous(breaks = scales::pretty_breaks())
+```
+It looks like there was a spike in shootings during the summer months.  However, it looks shootings are higher in the summer months in general
+
+```{r month_all, message=FALSE}
+incidents_month <- shooting_summary %>%
+  dplyr::group_by(month=month(OCCUR_DATE)) %>%
+  dplyr::summarise(incidents = n())
+
+ggplot(data=incidents_month, aes(x=month, y=incidents)) +
+  geom_line() + 
+  scale_x_continuous(breaks = scales::pretty_breaks())
+```
+
+
+Now, let's explore some of the demographics of the victims.
+
+```{r bar_chart, message=FALSE}
+## Victim Count by Age Group
+ggplot(data=shooting_summary, aes(x=VIC_AGE_GROUP, y=victim_cnt)) +
+  geom_bar(stat="identity") 
+
+## Victim Count by Race
+ggplot(data=shooting_summary, aes(x=VIC_RACE, y=victim_cnt)) +
+  geom_bar(stat="identity") +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) 
+
+## Victim Count by Sex
+ggplot(data=shooting_summary, aes(x=VIC_SEX, y=victim_cnt)) + 
+  geom_bar(stat="identity") 
+
+## Victim Count by Boro
+ggplot(data=shooting_summary, aes(x=BORO, y=victim_cnt)) +
+  geom_bar(stat="identity") 
+```
+
+The majority of the shooting victims in the NYPD data appear to be black males between the ages of 18 and 44.  The boros with the highest number of shootings are Brooklyn and Bronx.
+
+Let's run a linear regression model with the victim count as the response and the demographic fields as our predictors.
+
+```{r lm, message=FALSE}
+shooting_summary_model <- shooting_summary %>%
+  dplyr::group_by(VIC_AGE_GROUP,VIC_RACE,VIC_SEX,BORO) %>%
+  dplyr::summarise(victim_cnt = sum(victim_cnt))
+
+lm_shooting = lm(victim_cnt ~ VIC_AGE_GROUP + VIC_RACE + VIC_SEX + BORO, data = shooting_summary_model)
+summary(lm_shooting)
+```
+This model is statistically significant and has an R-squared of ~.28.  It looks like we may be able to improve the model adjusting the demographic fields or by creating new fields from our existing fields since several individual values of the categorical fields are not statistically significant.  Also, there are likely other predictors in the dataset that could be added to improve the model.  My bias is reflected in the predictors that were chosen for the model.
+
+Finally, lets see if the victim's age group is useful in predicting the likelihood of dying from the shooting.  In many instances, logistic regression is a useful machine learning algorithm for determining the probability of an event occurring given the predictor variables in the data.
+
+Based on the chart below, it looks like the percentage of shooting victims that resulted in death increases as the age of the victim increases.
+
+```{r death, message=FALSE}
+## Add 'death' field to the data.  This will be the response in our model.
+shooting_data_model <- shooting_data %>%
+  dplyr::mutate(death = if_else(STATISTICAL_MURDER_FLAG == "TRUE",1,0))
+
+shooting_data_chart <- shooting_data_model %>%
+  dplyr::group_by(VIC_AGE_GROUP) %>%
+  dplyr::summarise(victim_cnt = n(), death = sum(death))  %>%
+  dplyr::mutate(Rate = death/victim_cnt)
+
+ggplot(data=shooting_data_chart, aes(x=VIC_AGE_GROUP,y=Rate)) +
+  geom_bar(stat="identity")  + scale_y_continuous(labels = scales::percent)
+```
+
+Now, let's run the regression model and see what happens.
+
+```{r log_reg, message=FALSE}
+
+## Create training and testing datasets
+set.seed(54)
+randomize.rows = sample(nrow(shooting_data_model))
+shooting.data = shooting_data_model[randomize.rows, ]
+
+n = floor(0.8 * nrow(shooting.data))
+index = sample(seq_len(nrow(shooting.data)), size = n) 
+
+shooting.train = shooting.data[index, ] 
+shooting.test = shooting.data[-index, ]
+
+## Train the logistic regresssion model
+logit_shooting <- glm(death ~ VIC_AGE_GROUP, data = shooting.train, family = "binomial")
+summary(logit_shooting)
+
+prob <- predict(logit_shooting, newdata=shooting.test, type="response")
+summary(prob)
+
+```
+It appears that the victim's age group is useful in predicting the likelihood of dying from the shooting.  The coefficients are all statistically significant and follow the expected pattern.  However, the coefficient of the intercept is approximately -1.87 and the largest coefficient in our model is about 1.24.  Also, the max value of our predicted response is < .5.  So, the model is no better than predicting that each observation will result in the patient living. More predictors will be needed to make a useful model.
+
+Some of my bias appears in what predictors are used in the model.  I only included the age predictor, but I could have included other predictors from this dataset or from another dataset.  Also, some of the age groups are label 'UNKNOWN'.  There are several options for dealing with missing data, but I chose to do nothing in this case.
